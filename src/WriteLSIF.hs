@@ -7,17 +7,20 @@
 module WriteLSIF where
 
 import GHC
-import OccName
-import HieTypes hiding (Identifier)
-import Name
-
+import GHC.Iface.Ext.Types
+import GHC.Iface.Ext.Binary
+import GHC.Types.Unique.Supply
+import GHC.Types.Name
+import GHC.Types.Name.Env
+import GHC.Types.Name.Cache
+import GHC.Driver.Ppr
+import GHC.Utils.Outputable
 
 import qualified Data.Map as M
 import qualified Data.Set as S
 
 import Control.Monad
 import Control.Monad.State.Strict
-import NameEnv
 
 import Data.Aeson (ToJSON, encode)
 
@@ -40,11 +43,7 @@ import Streaming
 
 import qualified Data.ByteString.Lazy.Char8 as L
 
-import NameCache
-import HieBin
-import UniqSupply
-
-import qualified Language.Haskell.LSP.Types                 as LSP
+import qualified Language.LSP.Protocol.Types                 as LSP
 import qualified LSIF
 import LSIF (LsifId, ElementId, Element)
 import LSIF (RangeId, DefinitionResultId, ReferenceResultId, HoverResultId, ProjectId
@@ -84,8 +83,7 @@ data Opts
 
 initialState :: IO IndexS
 initialState = do
-  uniq_supply <- mkSplitUniqSupply 'z'
-  let nc = initNameCache uniq_supply []
+  nc <- initNameCache 'z' []
   return $ IndexS 1 nc emptyNameEnv emptyNameEnv M.empty []
 
 addExport :: Name -> Int -> IndexStream ()
@@ -105,8 +103,7 @@ collectAllReferences xs = St.mapM collectReferences (St.each xs)
 collectReferences :: FilePath -> IndexM ModRef
 collectReferences path = do
   nc <- gets nameCache
-  (hiefile, nc') <- liftIO $ readHieFile nc path
-  modify (\s -> s { nameCache = nc' })
+  hiefile <- liftIO $ readHieFile nc path
   return (genRefMap $ hie_file_result hiefile)
 
 {- Convert an HIE file into a LSIF file -}
@@ -206,7 +203,7 @@ mkReferences dn _ (ast, Right ref_id, id_details)
       -}
     --liftIO $ print (s, nameStableString ref_id, nameSrcSpan ref_id, occNameString (getOccName ref_id), (identInfo id_details))
   | otherwise =
-    liftIO $ print (nodeSpan ast, occNameString (getOccName ref_id), (identInfo id_details))
+    liftIO $ print $ (nodeSpan ast, occNameString (getOccName ref_id), (S.map (showSDocUnsafe . ppr) (identInfo id_details)))
 mkReferences _ _ (s, Left mn, _)  =
   liftIO $ print (nodeSpan s , moduleNameString mn)
 
@@ -257,18 +254,19 @@ mkHover range_id node =
       hr_id <- mkHoverResult c
       mkHoverEdge range_id hr_id
 
-mkHoverResult :: LSP.HoverContents -> IndexStream HoverResultId
+mkHoverResult :: LSP.MarkupContent -> IndexStream HoverResultId
 mkHoverResult c =
-  uniqueNode $ \i -> LSIF.mkHoverResult i (LSP.Hover c Nothing)
+  uniqueNode $ \i -> LSIF.mkHoverResult i (LSP.Hover (LSP.InL c) Nothing)
 
-mkHoverContents :: HieAST PrintedType -> Maybe LSP.HoverContents
-mkHoverContents Node{nodeInfo} =
+mkHoverContents :: HieAST PrintedType -> Maybe LSP.MarkupContent
+mkHoverContents n =
+  let nodeInfo = nodeInfo' n in
   case nodeType nodeInfo of
     [] -> Nothing
     xs -> let content = T.unlines $ do
                 x <- xs
                 ["```haskell",T.pack x,"```"]
-          in Just $ LSP.HoverContents $ LSP.MarkupContent LSP.MkMarkdown content
+          in Just $ LSP.mkMarkdown content
 
 -- There are no higher equalities between edges, so we don't need to return EdgeIds
 mkRefersTo :: RangeId -> ResultSetId -> IndexStream ()
@@ -324,7 +322,7 @@ mkRange s = do
   case M.lookup s m of
     Just i -> return i
     Nothing -> do
-      i <- uniqueNode $ \i -> LSIF.mkUntaggedRange i (LSP.Position ls cs) (LSP.Position le ce)
+      i <- uniqueNode $ \i -> LSIF.mkUntaggedRange i (LSP.Position (toEnum ls) (toEnum cs)) (LSP.Position (toEnum le) (toEnum ce))
       modify (\st -> st { rangeMap = M.insert s i m } )
       return i
 

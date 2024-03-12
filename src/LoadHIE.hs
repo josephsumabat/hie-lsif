@@ -3,10 +3,15 @@
 module LoadHIE where
 
 import GHC
-import HieTypes
-import Name
-import IfaceType
-import FastString
+import GHC.Iface.Ext.Types as HieTypes
+import GHC.Iface.Ext.Utils
+import GHC.Plugins hiding ((<>))
+import GHC.Iface.Type
+import qualified Data.Set as S
+--import HieTypes
+--import Name
+--import IfaceType
+--import FastString
 import Data.List
 
 import qualified Data.Array as A
@@ -36,10 +41,18 @@ generateReferencesList
 generateReferencesList ty_array hie = foldr (\ast m -> print_and_go ast ++ m) [] hie
    where
      print_and_go = go . recoverFullIfaceTypes ty_array
-     go :: HieAST a -> References a
+     go :: HieAST PrintedType -> References PrintedType
      go ast = this ++ concatMap go (nodeChildren ast)
        where
-         this = map (\(a, b) -> (ast,a, b)) (M.toList (nodeIdentifiers $ nodeInfo ast))
+         this = map (\(a, b) -> (ast,a, b)) (M.toList (nodeIdentifiers $ nodeInfo' ast))
+     
+nodeInfo' :: HieAST a -> NodeInfo a
+nodeInfo' = foldl' combineNodeInfo' emptyNodeInfo . getSourcedNodeInfo . sourcedNodeInfo
+  where
+     combineNodeInfo' :: NodeInfo a -> NodeInfo a -> NodeInfo a
+     (NodeInfo as ai ad) `combineNodeInfo'` (NodeInfo bs bi bd) =
+       NodeInfo (S.union as bs) (ai <> bi) (M.unionWith (<>) ad bd)
+
 
 genRefMap :: HieFile -> (FilePath, Module, References PrintedType, ByteString)
 genRefMap hf = (fp, ref_mod, generateReferencesList (hie_types hf) $ getAsts $ (hie_asts hf),contents)
@@ -108,7 +121,7 @@ type PrintedType = String
 recoverFullIfaceTypes
   :: A.Array TypeIndex HieTypeFlat -- ^ flat types
   -> HieAST TypeIndex              -- ^ flattened AST
-  -> HieAST PrintedType       -- ^ full AST
+  -> HieAST PrintedType            -- ^ full AST
 recoverFullIfaceTypes flattened ast = fmap (unflattened A.!) ast
     where
 
@@ -124,7 +137,7 @@ recoverFullIfaceTypes flattened ast = fmap (unflattened A.!) ast
     go (HLitTy l) = ifaceTyLit l
     go (HForAllTy ((n,_k),_af) t) =
       "forall " ++ getOccString n ++ " . " ++ t
-    go (HFunTy a b) = a ++ " -> " ++ b
+    go (HFunTy _ a b) = a ++ " -> " ++ b
     go (HQualTy con b) = con ++ " => " ++ b
     go (HCastTy a) = a
     go HCoercionTy = "<co>"
@@ -146,3 +159,4 @@ recoverFullIfaceTypes flattened ast = fmap (unflattened A.!) ast
     ifaceTyLit :: IfaceTyLit -> PrintedType
     ifaceTyLit (IfaceNumTyLit n) = show n
     ifaceTyLit (IfaceStrTyLit fs) = "\"" ++ unpackFS fs ++ "\""
+    ifaceTyLit (IfaceCharTyLit c) = "\'" ++ [c] ++ "\'"

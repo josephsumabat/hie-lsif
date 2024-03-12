@@ -22,7 +22,8 @@ library
   -- other-modules:
   -- other-extensions:
   build-depends:       base >=4.12.0.0 && < 5
-                       , ghc >= 8.7
+                       , ghc >= 9.6.2
+                       , ghc-prim
                        , containers
                        , filepath
                        , directory
@@ -33,7 +34,7 @@ library
                        , text
                        , array
                        , streaming
-                       , haskell-lsp-types
+                       , lsp-types
                        , base64-bytestring
   hs-source-dirs:      src
   ghc-options: -Wall -Wno-unticked-promoted-constructors
